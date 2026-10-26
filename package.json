@@ -1,0 +1,33 @@
+{
+  "name": "grok-web",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Local web UI for Grok Build sessions. Unofficial, not affiliated with xAI.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,web \"node server/index.js\" \"vite --config client/vite.config.js\"",
+    "start": "node server/index.js",
+    "build": "vite build --config client/vite.config.js",
+    "test": "npm run build && node --test test/*.test.js",
+    "test:live": "GROK_LIVE=1 node --test --test-concurrency=1 test/live.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "highlight.js": "^11.11.1",
+    "puppeteer-core": "^24.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^9.0.3",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "vite": "^6.0.11"
+  }
+}
