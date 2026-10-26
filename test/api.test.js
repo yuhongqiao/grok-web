@@ -85,6 +85,22 @@ test("a new session streams its first turn and the snapshot matches what Grok sa
   }
 });
 
+test("cancel stops the running turn and the stop button goes away", async () => {
+  const t = await setup();
+  try {
+    const project = await t.project("停止");
+    const { sessionId } = await json(await post(t.base, `/api/projects/${project.encoded}/sessions`, { text: "慢慢说" }));
+    const stream = t.stream(sessionId);
+    const showsRunning = (event) => (event.type === "state" || event.type === "snapshot") && event.state?.running;
+    await stream.waitFor(showsRunning);
+    assert.equal((await post(t.base, `/api/sessions/${sessionId}/cancel`, {})).status, 200);
+    await stream.waitFor((event) => turnDone(event) && event.update.stop_reason === "cancelled");
+    await stream.waitFor((event) => event.type === "state" && event.state.running === false);
+  } finally {
+    await t.close();
+  }
+});
+
 test("prompts sent during a turn wait in Grok's queue and can be removed or sent now", async () => {
   const t = await setup();
   try {

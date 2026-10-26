@@ -222,6 +222,8 @@ export function createHub({ store, spawnAgent }) {
   }
 
   function onTurnDone(rt, update) {
+    const promptId = update.prompt_id ? String(update.prompt_id) : "";
+    if (!rt.running || !promptId || rt.running.promptId === promptId) rt.running = null;
     rt.lastTurn = { stopReason: String(update.stop_reason || ""), elapsedMs: Number(update.elapsed_ms) || 0, usage: usageOf(update.usage) };
     rt.retry = null;
     for (const requestId of rt.pending.keys()) emit(rt.id, { type: "interaction_resolved", requestId });
@@ -404,8 +406,18 @@ export function createHub({ store, spawnAgent }) {
     if (rt.sent.length > 20) rt.sent.shift();
     if (body.now && (rt.running || rt.queue.length)) rt.sendNow.push(text);
     const ag = agent;
-    ag.request("session/prompt", { sessionId: id, prompt: blocks }, 0).catch((error) => {
-      if (agent === ag) emit(id, { type: "error", message: error.message || "发送失败" });
+    ag.request("session/prompt", { sessionId: id, prompt: blocks }, 0).then((result) => {
+      if (agent !== ag) return;
+      const promptId = String(result?._meta?.promptId || "");
+      if (!rt.running || !promptId || rt.running.promptId === promptId) {
+        rt.running = null;
+        pushState(rt, true);
+      }
+    }, (error) => {
+      if (agent !== ag) return;
+      rt.running = null;
+      pushState(rt, true);
+      emit(id, { type: "error", message: error.message || "发送失败" });
     });
     return { ok: true };
   }
@@ -502,7 +514,15 @@ export function createHub({ store, spawnAgent }) {
 
     async cancel(id) {
       const rt = locate(id);
-      if (rt.loaded && agent?.alive && rt.running) agent.notify("session/cancel", { sessionId: id });
+      if (!agent?.alive) throw new HttpError(409, "Grok 没有在运行");
+      if (!rt.loaded) await load(id);
+      agent.notify("session/cancel", { sessionId: id, _meta: { cancelTrigger: "mouse" } });
+      for (const [requestId, item] of rt.pending) {
+        agent.respond(item.rpcId, { outcome: { outcome: "cancelled" } });
+        emit(id, { type: "interaction_resolved", requestId });
+      }
+      rt.pending.clear();
+      pushState(rt);
       return { ok: true };
     },
 
