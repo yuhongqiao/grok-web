@@ -8,9 +8,13 @@ import { fixtureApp, line, listen, tempRoot, writeSession } from "./helpers.js";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const chrome = [
+  process.env.CHROME_BIN,
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
-].find((candidate) => fs.existsSync(candidate));
+  "/usr/bin/google-chrome",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+].find((candidate) => candidate && fs.existsSync(candidate));
 const built = fs.existsSync(path.join(rootDir, "client", "dist", "index.html"));
 
 const text = (page) => page.evaluate(() => document.body.innerText);

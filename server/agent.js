@@ -64,7 +64,8 @@ export function startAgent(options = {}) {
     stderr = `${stderr}\n${error.message}`.trim();
   });
 
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+  // close also fires when spawning fails (for example, Grok is not installed).
+  const exited = new Promise((resolve) => child.once("close", resolve));
   exited.then((code) => {
     stopped = true;
     const error = new Error(lastLine(stderr) || `Grok 进程已退出（${code ?? "未知"}）`);

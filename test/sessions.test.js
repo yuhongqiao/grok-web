@@ -71,7 +71,7 @@ test("the store lists projects, finds sessions by id and reads them", () => {
   fs.writeFileSync(path.join(dir, "plan_mode.json"), JSON.stringify({ state: "Active" }));
   fs.writeFileSync(path.join(dir, "usage.json"), JSON.stringify({ session: { totalTokens: 1500, inputTokens: 1000, cachedReadTokens: 700, outputTokens: 500, turnCount: 3, costUsdTicks: 2e10 } }));
   fs.writeFileSync(path.join(dir, "plan.md"), "# 计划");
-  writeSession(store.sessionsDir, "/private/tmp/scratch", "01a16e75-d656-7ee2-a8dd-1ebfba4b3279", { title: "临时" });
+  writeSession(store.sessionsDir, path.join(root, "scratch", "try"), "01a16e75-d656-7ee2-a8dd-1ebfba4b3279", { title: "临时" });
 
   const state = store.listState();
   assert.deepEqual(state.projects.map((project) => project.name), ["健身教程"]);
@@ -96,7 +96,17 @@ test("the store lists projects, finds sessions by id and reads them", () => {
   assert.throws(() => store.readSession("../../x", cwd), /无效的会话/);
 });
 
-test("trash moves the session aside, keeps the code, and refuses while another process holds the lock", async () => {
+test("the default project list leaves out system temporary folders", () => {
+  const store = storeFor(tempRoot(), { tempDirs: undefined });
+  const cwd = path.join(os.homedir(), "grok-web-project");
+  writeSession(store.sessionsDir, cwd, sessionId);
+  for (const folder of ["/tmp", "/tmp/scratch-session", "/private/tmp", "/private/tmp/scratch-session"]) {
+    writeSession(store.sessionsDir, folder, sessionId);
+  }
+  assert.deepEqual(store.listState().projects.map((project) => project.cwd), [cwd]);
+});
+
+test("trash moves the session aside, keeps the code, and refuses while another process holds the lock", { skip: process.platform === "win32" }, async () => {
   const root = tempRoot();
   const cwd = path.join(root, "projects", "demo");
   fs.mkdirSync(cwd, { recursive: true });
@@ -108,14 +118,17 @@ test("trash moves the session aside, keeps the code, and refuses while another p
     env: { ...process.env, LOCK: lock },
     stdio: "ignore",
   });
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.throws(() => store.trashSession(sessionId, cwd), /别处写入/);
-  assert.equal(fs.existsSync(dir), true);
-  const allowed = store.trashSession(sessionId, cwd, { ignorePids: [holder.pid] });
-  holder.kill();
-  assert.equal(fs.existsSync(allowed.trashedTo), true);
-  assert.equal(fs.existsSync(dir), false);
-  assert.equal(fs.existsSync(cwd), true);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.throws(() => store.trashSession(sessionId, cwd), /别处写入/);
+    assert.equal(fs.existsSync(dir), true);
+    const allowed = store.trashSession(sessionId, cwd, { ignorePids: [holder.pid] });
+    assert.equal(fs.existsSync(allowed.trashedTo), true);
+    assert.equal(fs.existsSync(dir), false);
+    assert.equal(fs.existsSync(cwd), true);
+  } finally {
+    holder.kill();
+  }
 });
 
 test("projects are real folders, removal only hides them, and file search skips build output", () => {

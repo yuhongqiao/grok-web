@@ -8,9 +8,13 @@ A local web UI for Grok Build sessions. Unofficial, not affiliated with xAI.
 
 ## 环境要求
 
-- macOS 或 Linux（Windows 没测过）
+- macOS 或 Linux（Windows 见下面说明）
 - Node.js 20 或更新
 - 装好并登录过的 Grok Build：终端里 `grok --version` 能打出版本号，`grok` 能正常对话。网页会在后台启动 `grok agent stdio`，沿用你在 `~/.grok/config.toml` 里配的模型、API key 和权限。
+
+已在 macOS arm64（Node.js 22）和 Debian 12 arm64（Node.js 20）上通过构建、单元、接口和浏览器测试，测试使用模拟 Grok。依赖锁文件包含 macOS、Linux、Windows 的 arm64 和 x64 原生构建包，但 Intel Mac、Linux x64 尚未实测。换机器后重新安装依赖，不要直接复制 `node_modules`。
+
+**Windows**：Grok Build 官方提供 Windows 安装方式，但本项目的路径处理和会话锁检测尚未适配原生 Windows。可以在 WSL2 内按下面的 Linux 步骤安装，把 Node.js、Grok Build 和本项目都装在同一个 WSL2 环境；本项目在 WSL2 下尚未实测。
 
 ## 安装
 
@@ -113,7 +117,7 @@ npm test
 npm run test:live
 ```
 
-`npm test` 先打包，再用模拟的 Grok（`test/fake-agent.js`）跑单元、接口和浏览器测试，不调用真的 Grok；浏览器测试要装 Chrome，没装会跳过。`test:live` 连真实的 Grok 在临时目录里跑几轮（会用掉一点额度）：测排队、拒绝一次写文件、切推理强度和计划模式、/btw，结束后删掉临时会话。
+`npm test` 先打包，再用模拟的 Grok（`test/fake-agent.js`）跑单元、接口和浏览器测试，不调用真的 Grok；浏览器测试会查找 macOS、Linux 常见位置的 Chrome / Chromium，也可以用 `CHROME_BIN` 指定可执行文件路径，没找到会跳过。`test:live` 连真实的 Grok 在临时目录里跑几轮（会用掉一点额度）：测排队、拒绝一次写文件、切推理强度和计划模式、/btw，结束后删掉临时会话。
 
 ## 许可证
 

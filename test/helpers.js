@@ -40,6 +40,7 @@ export function storeFor(root, extra = {}) {
     trashDir: path.join(root, "trash"),
     projectsFile: path.join(root, "projects.json"),
     parentDir: path.join(root, "projects"),
+    tempDirs: [path.join(root, "scratch")],
     ...extra,
   });
 }

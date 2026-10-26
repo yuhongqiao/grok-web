@@ -110,16 +110,38 @@ function permissionOf(mode, legacyYolo) {
 
 export function lockHeld(lockPath, ignorePids = []) {
   if (!lockPath || !fs.existsSync(lockPath)) return false;
+  const other = (pid) => pid > 0 && pid !== process.pid && !ignorePids.includes(pid);
   try {
-    const out = execFileSync("lsof", ["-t", "--", lockPath], { encoding: "utf8" }).trim();
-    if (!out) return false;
-    return out.split("\n").some((line) => {
-      const pid = Number(line);
-      return pid > 0 && pid !== process.pid && !ignorePids.includes(pid);
-    });
-  } catch {
-    return false;
+    const out = execFileSync("lsof", ["-t", "--", lockPath], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return out.split("\n").some((line) => other(Number(line)));
+  } catch (error) {
+    // lsof exits 1 when nobody has the file open. Minimal Linux installs may not have it at all.
+    if (error.code !== "ENOENT" || process.platform !== "linux") return false;
+    return procHolders(lockPath).some(other);
   }
+}
+
+// Processes that have the file open, read from /proc.
+function procHolders(file) {
+  const target = fs.realpathSync(file);
+  const pids = [];
+  for (const name of fs.readdirSync("/proc")) {
+    if (!/^\d+$/.test(name)) continue;
+    let fds;
+    try {
+      fds = fs.readdirSync(`/proc/${name}/fd`);
+    } catch {
+      continue;
+    }
+    if (fds.some((fd) => {
+      try {
+        return fs.readlinkSync(`/proc/${name}/fd/${fd}`) === target;
+      } catch {
+        return false;
+      }
+    })) pids.push(Number(name));
+  }
+  return pids;
 }
 
 // Older sessions only have chat_history.jsonl. Folded into the same message shape as updates.
@@ -188,6 +210,7 @@ export function createStore(options) {
   const configFile = options.configFile ? path.resolve(options.configFile) : "";
   const activeSessionsFile = options.activeSessionsFile ? path.resolve(options.activeSessionsFile) : "";
   const isLockHeld = options.isLockHeld || lockHeld;
+  const tempDirs = (options.tempDirs || ["/tmp", "/private/tmp"]).map((dir) => path.resolve(dir));
   const located = new Map();
   let holders = { at: 0, map: new Map() };
 
@@ -320,8 +343,9 @@ export function createStore(options) {
     return found;
   }
 
+  // Sessions started in scratch folders are left out of the project list.
   function isTemp(cwd) {
-    return cwd === "/tmp" || cwd.startsWith("/tmp/") || cwd === "/private/tmp" || cwd.startsWith("/private/tmp/");
+    return tempDirs.some((dir) => cwd === dir || cwd.startsWith(`${dir}${path.sep}`));
   }
 
   function readTail(file) {
