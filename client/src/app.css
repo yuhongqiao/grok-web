@@ -158,6 +158,11 @@ button:disabled { cursor: default; }
   letter-spacing: 0.02em;
 }
 
+.workspace-switch { display: flex; gap: 4px; margin: 4px 14px 14px; padding: 4px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--bg); }
+.workspace-switch a { flex: 1; padding: 5px 10px; border-radius: 7px; color: var(--muted); text-decoration: none; text-align: center; font-size: 13px; }
+.workspace-switch a:hover { color: var(--text); background: var(--hover); }
+.workspace-switch a[aria-current="page"] { color: var(--text); background: var(--raise); font-weight: 600; }
+
 /* The cursor in the logo blinks while any session is running, and three times when the welcome screen opens. */
 .logo-mark.busy .logo-cursor { animation: cursor-blink 1.06s steps(1, end) infinite; }
 .welcome-logo .logo-cursor { animation: cursor-blink 1.06s steps(1, end) 3; }

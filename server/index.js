@@ -2,8 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { randomBytes } from "node:crypto";
 import { startAgent } from "./agent.js";
 import { createHub } from "./hub.js";
+import { createCodexHub, mountCodexRoutes } from "./codex.js";
+import { createCodexWorkspace, mountWorkspaceRoutes } from "./codex-workspace.js";
+import { createBrowserLab, mountBrowserRoutes } from "./codex-browser.js";
 import { HttpError, createStore, defaultPaths } from "./sessions.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -28,7 +32,7 @@ export function localOnly(req, res, next) {
   next();
 }
 
-export function createApp({ store, hub }) {
+export function createApp({ store, hub, codex, workspace, browser, browserToken }) {
   const app = express();
   app.disable("x-powered-by");
   app.use(localOnly);
@@ -46,6 +50,10 @@ export function createApp({ store, hub }) {
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
   });
+
+  if (codex) mountCodexRoutes(app, codex, route);
+  if (workspace) mountWorkspaceRoutes(app, workspace, route);
+  if (browser) mountBrowserRoutes(app, browser, route, browserToken);
 
   app.get("/api/state", route(() => ({ ...store.listState(), defaults: hub.defaults(), live: hub.live() })));
   app.post("/api/projects", route((req) => store.createProject(req.body || {}), 201));
@@ -120,15 +128,23 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 if (isMain) {
   const store = createStore(defaultPaths(root));
   const hub = createHub({ store, spawnAgent: () => startAgent() });
+  const codex = createCodexHub({ projectsFile: path.join(root, "data", "codex-projects.json") });
+  const workspace = createCodexWorkspace(codex);
+  const browser = createBrowserLab({ dataDir: path.join(root, "data", "codex-browser") });
+  const browserToken = randomBytes(32).toString("hex");
   hub.start();
   const port = Number(process.env.PORT || DEFAULT_PORT);
-  const server = createApp({ store, hub }).listen(port, HOST, () => {
+  const server = createApp({ store, hub, codex, workspace, browser, browserToken }).listen(port, HOST, () => {
+    codex.configureBrowser({ name: `grok_web_browser_${process.pid}_${randomBytes(4).toString("hex")}`, script: path.join(root, "server", "browser-mcp.js"), url: `http://${HOST}:${server.address().port}/api/codex/browser/mcp`, token: browserToken });
     console.log(`grok-web listening on http://${HOST}:${port}`);
   });
-  const shutdown = () => {
+  const shutdown = async () => {
+    setTimeout(() => process.exit(0), 5000).unref();
     hub.stop();
+    workspace.close();
+    codex.stop();
+    await browser.stop();
     server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 2000).unref();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

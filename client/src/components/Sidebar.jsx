@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ago } from "../format.js";
 import Icon, { Spinner } from "./Icon.jsx";
 import { LogoMark, Wordmark } from "./Logo.jsx";
+import WorkspaceSwitch from "./WorkspaceSwitch.jsx";
 
 const SHOWN = 8;
 
@@ -49,6 +50,7 @@ export default function Sidebar({
           <Icon name="sidebar" size={17} />
         </button>
       </div>
+      <WorkspaceSwitch active="grok" />
       <button type="button" className="new-chat" data-testid="new-chat" onClick={onNewSession}>
         <Icon name="plusCircle" size={17} />
         新会话

@@ -188,6 +188,7 @@ export default function ChatView({
           })}
           <Composer
             key={selection?.kind === "session" ? selection.id : `draft-${selection?.encoded || ""}`}
+            draftKey={selection?.kind === "session" ? selection.id : `draft-${selection?.encoded || ""}`}
             catalog={catalog}
             sessions={sessions}
             running={running}

@@ -55,6 +55,7 @@ function MenuItem({ selected, onClick, icon, title, hint, testId }) {
 }
 
 export default function Composer({
+  draftKey,
   catalog,
   sessions,
   running,
@@ -78,7 +79,7 @@ export default function Composer({
 }) {
   const box = useRef(null);
   const picker = useRef(null);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() => sessionStorage.getItem(`grok-web-draft:${draftKey}`) || "");
   const [files, setFiles] = useState([]);
   const [fileError, setFileError] = useState("");
   const [menuIndex, setMenuIndex] = useState(0);
@@ -86,6 +87,10 @@ export default function Composer({
   const [historyAt, setHistoryAt] = useState(-1);
   const [mention, setMention] = useState(null);
   const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    sessionStorage.setItem(`grok-web-draft:${draftKey}`, text);
+  }, [draftKey, text]);
 
   useEffect(() => {
     if (!seed) return;
@@ -158,6 +163,7 @@ export default function Composer({
     try {
       const ok = await onSubmit(value, files, { now });
       if (ok !== false) {
+        sessionStorage.removeItem(`grok-web-draft:${draftKey}`);
         setText("");
         setFiles([]);
         setHistoryAt(-1);
