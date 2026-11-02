@@ -267,11 +267,6 @@ export default function Composer({
       return;
     }
     if (event.key !== "Enter") return;
-    if ((event.metaKey || event.ctrlKey) && running) {
-      event.preventDefault();
-      submit({ now: true });
-      return;
-    }
     const sends = multiline ? event.shiftKey || event.metaKey || event.ctrlKey : !event.shiftKey;
     if (sends) {
       event.preventDefault();
@@ -364,7 +359,7 @@ export default function Composer({
           data-testid="composer"
           rows={1}
           value={text}
-          placeholder={running ? "Grok 正在处理，现在发送会排队（Ctrl+Enter 立即发送）" : "发消息或创建任务，/ 调用指令，@ 文件"}
+          placeholder={running ? "正在处理。这条会排进当前会话，本轮结束后再发" : "发消息或创建任务，/ 调用指令，@ 文件"}
           onChange={(event) => {
             setText(event.target.value);
             setMenuHidden(false);

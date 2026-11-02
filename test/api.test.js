@@ -101,29 +101,43 @@ test("cancel stops the running turn and the stop button goes away", async () => 
   }
 });
 
-test("prompts sent during a turn wait in Grok's queue and can be removed or sent now", async () => {
+test("follow-ups during a turn queue in the same session and do not cancel it", async () => {
   const t = await setup();
   try {
     const project = await t.project("排队");
     const { sessionId } = await json(await post(t.base, `/api/projects/${project.encoded}/sessions`, { text: "慢慢说" }));
     const stream = t.stream(sessionId);
-    const opened = await stream.waitFor(stateIs((state) => state.running));
-    assert.equal(opened.messages?.[0]?.text ?? "慢慢说", "慢慢说");
+    await stream.waitFor(stateIs((state) => state.running));
     for (const text of ["第二条", "第三条"]) {
       assert.equal((await post(t.base, `/api/sessions/${sessionId}/prompt`, { text })).status, 200);
     }
     const queued = await stream.waitFor(stateIs((state) => state.queue.length === 2));
     const third = queued.state.queue.find((entry) => entry.text === "第三条");
     assert.equal((await post(t.base, `/api/sessions/${sessionId}/queue/${third.id}`, { action: "remove" })).status, 200);
-    await stream.waitFor(stateIs((state) => state.queue.length === 1));
-    assert.equal((await post(t.base, `/api/sessions/${sessionId}/prompt`, { text: "插队", now: true })).status, 200);
+    await stream.waitFor(stateIs((state) => state.queue.length === 1 && state.running));
+    const firstDone = await stream.waitFor((event) => turnDone(event), { timeout: 15_000 });
+    assert.equal(firstDone.update.stop_reason, "end_turn");
     await stream.waitFor((event) => event.type === "turn_start" && event.message.text === "第二条", { timeout: 15_000 });
-    await stream.waitFor(() => stream.events.filter(turnDone).length >= 3, { timeout: 15_000 });
-    const starts = stream.events.filter((event) => event.type === "turn_start").map((event) => event.message.text);
-    assert.deepEqual(starts.filter((text) => text !== "慢慢说"), ["插队", "第二条"]);
-    assert.equal(stream.events.filter(turnDone)[0].update.stop_reason, "cancelled");
-    const missing = await post(t.base, `/api/sessions/${sessionId}/queue/nope`, { action: "remove" });
-    assert.equal(missing.status, 404);
+    assert.equal(stream.events.some((event) => turnDone(event) && event.update.stop_reason === "cancelled"), false);
+  } finally {
+    await t.close();
+  }
+});
+
+test("send now interrupts the running turn and sends that queued message", async () => {
+  const t = await setup();
+  try {
+    const project = await t.project("立即发送");
+    const { sessionId } = await json(await post(t.base, `/api/projects/${project.encoded}/sessions`, { text: "慢慢说" }));
+    const stream = t.stream(sessionId);
+    await stream.waitFor(stateIs((state) => state.running));
+    assert.equal((await post(t.base, `/api/sessions/${sessionId}/prompt`, { text: "第二条" })).status, 200);
+    const queued = await stream.waitFor(stateIs((state) => state.queue.some((entry) => entry.text === "第二条")));
+    const second = queued.state.queue.find((entry) => entry.text === "第二条");
+    assert.equal((await post(t.base, `/api/sessions/${sessionId}/queue/${second.id}`, { action: "now" })).status, 200);
+    const stopped = await stream.waitFor((event) => turnDone(event), { timeout: 15_000 });
+    assert.equal(stopped.update.stop_reason, "cancelled");
+    await stream.waitFor((event) => event.type === "turn_start" && event.message.text === "第二条", { timeout: 15_000 });
   } finally {
     await t.close();
   }

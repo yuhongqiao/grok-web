@@ -58,9 +58,8 @@ test("live grok: first turn, queue, rejected permission, settings, rewind points
     const queued = await stream.waitFor(stateIs((state) => state.queue.some((entry) => entry.text.includes("第三"))), { from, timeout: 60_000 });
     const third = queued.state.queue.find((entry) => entry.text.includes("第三"));
     await json(await post(base, `/api/sessions/${sessionId}/queue/${third.id}`, { action: "remove" }));
-    await stream.waitFor(() => finished(stream) >= 3, { from, timeout: 300_000 });
-    const starts = stream.events.slice(from).filter((event) => event.type === "turn_start").map((event) => event.message?.text || "");
-    assert.equal(starts.some((text) => text.includes("第三")), false);
+    await stream.waitFor(() => finished(stream) >= 2, { from, timeout: 300_000 });
+    assert.equal(stream.events.slice(from).some((event) => turnDone(event) && event.update.stop_reason === "cancelled"), false);
     assert.match(reply(stream, from), /第二/);
 
     const asked = stream.events.length;

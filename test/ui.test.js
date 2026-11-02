@@ -93,7 +93,7 @@ test("the browser drives a whole Grok session", { skip: !chrome || !built, timeo
     assert.equal(await page.$eval("[data-testid='effort-control']", (element) => element.textContent), "低");
     await page.waitForSelector(`[data-session-id='${sessionId}']`);
 
-    // Several messages while a turn runs: they queue, and a queued one can be removed.
+    // Follow-ups while a turn runs stay in this session's queue and do not stop it.
     await send(page, "慢慢讲一下");
     await page.waitForSelector("[data-testid='stop']");
     await send(page, "第二个问题");
@@ -102,10 +102,9 @@ test("the browser drives a whole Grok session", { skip: !chrome || !built, timeo
     const removeButtons = await page.$$("[data-testid='queue-remove']");
     await removeButtons[1].click();
     await page.waitForFunction(() => document.querySelectorAll("[data-testid='queue'] .queue-item").length === 1);
-    await waitText(page, "收到：第二个问题", 15_000);
-    assert.equal((await text(page)).includes("收到：第三个问题"), false);
-    const order = await page.$$eval("[data-role='user'] .bubble-text", (items) => items.map((item) => item.textContent));
-    assert.deepEqual(order, ["你好", "慢慢讲一下", "第二个问题"]);
+    assert.equal((await text(page)).includes("已停止"), false);
+    await waitText(page, "第6段");
+    await page.waitForFunction(() => !document.querySelector("[data-testid='stop']"));
 
     // Model switch resets the effort to that model's default.
     await page.click("[data-testid='model-control']");

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { applyUpdate, usageOf } from "../client/src/transcript.js";
 import { buildPrompt, mentions } from "./prompt.js";
 import { HttpError } from "./sessions.js";
@@ -32,8 +33,9 @@ export function createHub({ store, spawnAgent }) {
     rt = {
       id, cwd, loaded: false, loading: null, replaying: false,
       permission: store.configDefaults().permission, mode: "default", model: "", effort: "", efforts: null, title: "",
-      running: null, queue: [], turn: null, pending: new Map(), retry: null, tasks: [], commands: null,
-      usage: null, lastTurn: null, sent: [], sendNow: [],
+      running: null, queue: [], waiting: [], inflight: null, turnOpen: false, interrupting: false,
+      turn: null, pending: new Map(), retry: null, tasks: [], commands: null,
+      usage: null, lastTurn: null, sent: [],
     };
     refreshFromDisk(rt);
     runtimes.set(id, rt);
@@ -100,9 +102,12 @@ export function createHub({ store, spawnAgent }) {
       rt.loaded = false;
       rt.running = null;
       rt.queue = [];
+      rt.waiting = [];
+      rt.inflight = null;
+      rt.turnOpen = false;
+      rt.interrupting = false;
       rt.pending.clear();
       rt.retry = null;
-      rt.sendNow = [];
       pushState(rt);
       if (busy) emit(rt.id, { type: "error", message: `Grok 进程退出了${reason ? `：${reason}` : ""}。再发一条会自动重启。` });
     }
@@ -223,7 +228,11 @@ export function createHub({ store, spawnAgent }) {
 
   function onTurnDone(rt, update) {
     const promptId = update.prompt_id ? String(update.prompt_id) : "";
-    if (!rt.running || !promptId || rt.running.promptId === promptId) rt.running = null;
+    if (!rt.running || !promptId || rt.running.promptId === promptId) {
+      rt.running = null;
+      rt.turnOpen = false;
+      rt.interrupting = false;
+    }
     rt.lastTurn = { stopReason: String(update.stop_reason || ""), elapsedMs: Number(update.elapsed_ms) || 0, usage: usageOf(update.usage) };
     rt.retry = null;
     for (const requestId of rt.pending.keys()) emit(rt.id, { type: "interaction_resolved", requestId });
@@ -236,22 +245,46 @@ export function createHub({ store, spawnAgent }) {
         pushState(rt);
       }
     }, () => {});
+    drain(rt);
   }
 
-  // Grok runs one prompt per session at a time and queues the rest; this mirrors that queue.
+  // Follow-up messages stay local until this turn's turn_completed.
+  // A second session/prompt while one is open makes Grok cancel the running turn.
+  function publishWaiting(rt) {
+    rt.queue = rt.waiting.map((item) => ({ id: item.id, text: item.text, kind: "prompt" }));
+  }
+
+  function drain(rt) {
+    if (!agent?.alive || rt.inflight || rt.turnOpen || !rt.waiting.length) return;
+    const entry = rt.waiting.shift();
+    publishWaiting(rt);
+    const ag = agent;
+    rt.turnOpen = true;
+    rt.inflight = ag.request("session/prompt", { sessionId: rt.id, prompt: entry.blocks }, 0).then((result) => {
+      if (agent !== ag) return;
+      if (result?.stopReason) rt.turnOpen = false;
+      const promptId = String(result?._meta?.promptId || "");
+      if (!rt.running || !promptId || rt.running.promptId === promptId) rt.running = null;
+      pushState(rt, true);
+    }, (error) => {
+      if (agent !== ag) return;
+      rt.turnOpen = false;
+      rt.running = null;
+      pushState(rt, true);
+      emit(rt.id, { type: "error", message: error.message || "发送失败" });
+    }).finally(() => {
+      rt.inflight = null;
+      if (!rt.turnOpen) drain(rt);
+    });
+  }
+
   function onQueue(params) {
     const rt = runtimes.get(params.sessionId);
     if (!rt) return;
-    rt.queue = (params.entries || []).map((entry) => ({ id: String(entry.id), text: String(entry.text || ""), kind: entry.kind || "prompt" }));
     const runningId = params.runningPromptId ? String(params.runningPromptId) : "";
     if (runningId && runningId !== rt.running?.promptId) startTurn(rt, runningId, String(params.runningText || ""), params.runningKind);
-    else if (!runningId) rt.running = null;
-    for (const entry of rt.queue) {
-      const at = rt.sendNow.indexOf(entry.text.trim());
-      if (at < 0) continue;
-      rt.sendNow.splice(at, 1);
-      agent?.notify("_x.ai/queue/interject", { sessionId: rt.id, id: entry.id });
-    }
+    else if (!runningId && !rt.turnOpen) rt.running = null;
+    publishWaiting(rt);
     pushState(rt, true);
   }
 
@@ -404,21 +437,12 @@ export function createHub({ store, spawnAgent }) {
       ],
     });
     if (rt.sent.length > 20) rt.sent.shift();
-    if (body.now && (rt.running || rt.queue.length)) rt.sendNow.push(text);
-    const ag = agent;
-    ag.request("session/prompt", { sessionId: id, prompt: blocks }, 0).then((result) => {
-      if (agent !== ag) return;
-      const promptId = String(result?._meta?.promptId || "");
-      if (!rt.running || !promptId || rt.running.promptId === promptId) {
-        rt.running = null;
-        pushState(rt, true);
-      }
-    }, (error) => {
-      if (agent !== ag) return;
-      rt.running = null;
-      pushState(rt, true);
-      emit(id, { type: "error", message: error.message || "发送失败" });
-    });
+    const entry = { id: randomUUID(), text, blocks };
+    if (body.now) rt.waiting.unshift(entry);
+    else rt.waiting.push(entry);
+    publishWaiting(rt);
+    pushState(rt, true);
+    drain(rt);
     return { ok: true };
   }
 
@@ -528,9 +552,26 @@ export function createHub({ store, spawnAgent }) {
 
     async queueAction(id, entryId, action) {
       const rt = locate(id);
-      if (!rt.loaded || !agent?.alive) throw new HttpError(409, "会话没有在运行");
-      if (!rt.queue.some((entry) => entry.id === entryId)) throw new HttpError(404, "排队里没有这一条");
-      agent.notify(action === "now" ? "_x.ai/queue/interject" : "_x.ai/queue/remove", { sessionId: id, id: entryId });
+      const index = rt.waiting.findIndex((entry) => entry.id === entryId);
+      if (index < 0) throw new HttpError(404, "排队里没有这一条");
+      if (action !== "now") {
+        rt.waiting.splice(index, 1);
+        publishWaiting(rt);
+        pushState(rt, true);
+        return { ok: true };
+      }
+      const [entry] = rt.waiting.splice(index, 1);
+      rt.waiting.unshift(entry);
+      publishWaiting(rt);
+      pushState(rt, true);
+      if ((rt.turnOpen || rt.inflight || rt.running) && agent?.alive) {
+        if (!rt.interrupting) {
+          rt.interrupting = true;
+          agent.notify("session/cancel", { sessionId: id, _meta: { cancelTrigger: "mouse" } });
+        }
+        return { ok: true };
+      }
+      drain(rt);
       return { ok: true };
     },
 

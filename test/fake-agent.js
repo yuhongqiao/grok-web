@@ -340,6 +340,11 @@ const handlers = {
     }
     return { newSessionId: id, chatMessagesCopied: 0, updatesCopied: 0, newCwd: params.newCwd, parentSessionId: params.sourceSessionId };
   },
+  "_x.ai/interject": (params) => {
+    const session = sessions.get(params.sessionId);
+    if (session?.running) session.running.steers = [...(session.running.steers || []), String(params.text || "")];
+    return { status: "queued" };
+  },
   "_x.ai/btw": (params) => ({ result: { answer: `旁问回答：${params.question}` } }),
   "_x.ai/skills/list": () => ({ result: { skills: [{ name: "code-review", short_description: "严格审查", scope: "bundled", enabled: true, user_invocable: true }] } }),
   "_x.ai/mcp/list": () => ({ result: { servers: [] } }),
