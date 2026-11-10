@@ -1,7 +1,8 @@
 import path from "node:path";
 import fs from "node:fs";
 import { HttpError } from "./sessions.js";
-import { mentions } from "./prompt.js";
+import { mentions, withinProject } from "./prompt.js";
+import { attachmentText } from "../client/src/codex/attachments.js";
 
 const IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const TEXT_TYPES = new Set(["application/json", "application/xml", "application/javascript", "application/x-sh", "application/sql"]);
@@ -12,7 +13,7 @@ export function codexInput(body, cwd) {
   for (const file of mentions(text, cwd)) input.push({ type: "mention", name: path.basename(file), path: file });
   for (const match of text.matchAll(/(?:^|\s)@"([^"\r\n]+)"/g)) {
     const file = path.resolve(cwd, match[1]);
-    try { if (fs.statSync(file).isFile() && !input.some((part) => part.path === file)) input.push({ type: "mention", name: path.basename(file), path: file }); } catch {}
+    try { if (fs.statSync(file).isFile() && withinProject(cwd, file) && !input.some((part) => part.path === file)) input.push({ type: "mention", name: path.basename(file), path: file }); } catch {}
   }
   const attachments = body.attachments ?? [];
   if (!Array.isArray(attachments) || attachments.length > 8) throw new HttpError(400, "一次最多 8 个附件");
@@ -29,7 +30,7 @@ export function codexInput(body, cwd) {
       let content;
       try { content = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new HttpError(400, `${name} 不是 UTF-8 文本`); }
       if (content.includes("\0") || /\.(pdf|docx?|xlsx?|pptx?|zip)$/i.test(name)) throw new HttpError(400, `${name} 暂不支持，请添加图片或 UTF-8 文本文件`);
-      input.push({ type: "text", text: `附件：${name}\n${content}` });
+      input.push({ type: "text", text: attachmentText(name, content) });
     }
   }
   if (!input.length) throw new HttpError(400, "请输入消息或添加附件");

@@ -265,6 +265,7 @@ const handlers = {
   "session/new": (params) => {
     const id = `01a17000-0000-7000-8000-${String(++counter).padStart(12, "0")}`;
     const session = makeSession(id, params.cwd, params._meta);
+    session.mcpServers = Array.isArray(params.mcpServers) ? params.mcpServers : [];
     writeSummary(id);
     setImmediate(() => update(id, { sessionUpdate: "available_commands_update", availableCommands: COMMANDS }));
     return { sessionId: id, configOptions: configOptions(session) };
@@ -276,6 +277,7 @@ const handlers = {
       replay(params.sessionId);
     }
     session.yolo = Boolean(params._meta?.yoloMode);
+    if (Array.isArray(params.mcpServers)) session.mcpServers = params.mcpServers;
     setImmediate(() => update(params.sessionId, { sessionUpdate: "available_commands_update", availableCommands: COMMANDS }));
     return { configOptions: configOptions(session) };
   },
@@ -347,7 +349,10 @@ const handlers = {
   },
   "_x.ai/btw": (params) => ({ result: { answer: `旁问回答：${params.question}` } }),
   "_x.ai/skills/list": () => ({ result: { skills: [{ name: "code-review", short_description: "严格审查", scope: "bundled", enabled: true, user_invocable: true }] } }),
-  "_x.ai/mcp/list": () => ({ result: { servers: [] } }),
+  "_x.ai/mcp/list": (params) => {
+    const servers = sessions.get(params.sessionId)?.mcpServers || [];
+    return { result: { servers: servers.map((server) => ({ name: server.name, command: server.command, status: "stdio" })) } };
+  },
   "_x.ai/plugins/list": () => ({ result: { plugins: [] } }),
   "_x.ai/hooks/list": () => ({ result: { hooks: [] } }),
   "_x.ai/memory/list": () => ({ files: [], enabled: false, disabled_reason: "not_configured" }),

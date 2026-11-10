@@ -3,9 +3,20 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import express from "express";
-import { createBrowserLab } from "../server/codex-browser.js";
+import { browserUrl, createBrowserLab, persistedPageUrl } from "../server/codex-browser.js";
 import { tempRoot, listen } from "./helpers.js";
 import { waitFor } from "./codex-helpers.js";
+
+test("browser addresses stay on ordinary http(s) pages and recorded urls drop secrets", () => {
+  assert.equal(browserUrl("https://example.com/a"), "https://example.com/a");
+  assert.throws(() => browserUrl("http://169.254.169.254/latest/meta-data"), /元数据/);
+  assert.throws(() => browserUrl("http://user:pass@example.com"), /HTTP/);
+  const stored = persistedPageUrl("https://example.com/cb?token=sekret&q=1#access_token=abc");
+  assert.equal(stored.includes("sekret"), false);
+  assert.equal(stored.includes("access_token"), false);
+  assert.match(stored, /q=1/);
+  assert.equal(persistedPageUrl("https://example.com/app#/dashboard"), "https://example.com/app#/dashboard");
+});
 
 const chrome = [process.env.CHROME_BIN, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome", "/usr/bin/chromium"].find((file) => file && fs.existsSync(file));
 

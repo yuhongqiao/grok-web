@@ -89,6 +89,7 @@ export default function App() {
   const [showList, setShowList] = useState(false);
   const [seed, setSeed] = useState(null);
   const [streamKey, setStreamKey] = useState(0);
+  const [browserTick, setBrowserTick] = useState(0);
   const refreshTimer = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -518,6 +519,13 @@ export default function App() {
       case "settings":
         setDialog({ type: "settings" });
         return;
+      case "browser":
+        if (!project) {
+          note("先选一个项目，再打开内置浏览器。");
+          return;
+        }
+        setBrowserTick((value) => value + 1);
+        return;
       case "docs":
         window.open("https://docs.x.ai/build/overview", "_blank", "noreferrer");
         return;
@@ -669,6 +677,7 @@ export default function App() {
         onPickProject={() => pickProject(true)}
         onShowList={() => setShowList(true)}
         onImage={(image) => setDialog({ type: "image", image })}
+        browserTick={browserTick}
       />
       {dialog?.type === "project" && (
         <ProjectDialog

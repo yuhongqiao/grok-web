@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { latestBrowserCall } from "../codex/browser.js";
 import { MODES, money, shortPath, tokens } from "../format.js";
 import { PermissionCard, PlanCard, QuestionCard } from "./Cards.jsx";
 import Composer from "./Composer.jsx";
 import Icon, { Spinner } from "./Icon.jsx";
 import { LogoMark } from "./Logo.jsx";
 import { AssistantMessage, Dots, Note, ToolRow, UserMessage } from "./Message.jsx";
+
+const BrowserPanel = lazy(() => import("../codex/BrowserPanel.jsx"));
+const BrowserSession = lazy(() => import("../codex/BrowserSession.jsx"));
 
 const PAGE = 80;
 
@@ -33,6 +37,7 @@ export default function ChatView({
   onPickProject,
   onShowList,
   onImage,
+  browserTick = 0,
 }) {
   const [tab, setTab] = useState("chat");
   const [limit, setLimit] = useState(PAGE);
@@ -61,6 +66,12 @@ export default function ChatView({
     setLimit(PAGE);
     stick.current = true;
   }, [selection?.id, selection?.encoded, selection?.kind]);
+
+  const seenBrowser = useRef(browserTick);
+  useEffect(() => {
+    if (browserTick !== seenBrowser.current) setTab("browser");
+    seenBrowser.current = browserTick;
+  }, [browserTick]);
 
   useLayoutEffect(() => {
     const element = scroller.current;
@@ -93,9 +104,16 @@ export default function ChatView({
   };
   const interactions = state?.interactions || [];
   const modeInfo = MODES[mode] || MODES.ask;
+  const browserCall = useMemo(() => latestBrowserCall(messages), [messages]);
+  const askBrowser = async (text, attachments = []) => {
+    setTab("chat");
+    if (!await onSubmit(text, attachments)) throw new Error("发送失败，请在对话里查看错误");
+  };
 
   return (
     <main className="main">
+      <div className="grok-conversation">
+      <div className="grok-conversation-main">
       <header className="chat-head">
         <button type="button" className="icon-button only-mobile" aria-label="会话列表" onClick={onShowList}>
           <Icon name="sidebar" size={18} />
@@ -111,6 +129,7 @@ export default function ChatView({
       <nav className="tabs">
         <button type="button" className={tab === "chat" ? "tab active" : "tab"} onClick={() => setTab("chat")}>对话</button>
         <button type="button" className={tab === "trace" ? "tab active" : "tab"} data-testid="trace-tab" onClick={() => setTab("trace")}>轨迹</button>
+        {cwd && <button type="button" className={tab === "browser" ? "tab active" : "tab"} data-testid="browser-tab" onClick={() => setTab("browser")}>浏览器</button>}
       </nav>
       {error && (
         <div className="banner bad" data-testid="error">
@@ -136,7 +155,11 @@ export default function ChatView({
       )}
       <div className="scroller" ref={scroller} onScroll={onScroll} data-testid="transcript">
         <div className="column">
-          {tab === "trace" ? <Trace messages={messages} cwd={cwd} /> : (
+          {tab === "browser" ? (
+            <Suspense fallback={<div className="loading"><Spinner size={18} /></div>}>
+              <BrowserPanel cwd={cwd} agent="Grok" onAsk={askBrowser} />
+            </Suspense>
+          ) : tab === "trace" ? <Trace messages={messages} cwd={cwd} /> : (
             <>
               {!isDraft && !view.ready && <div className="loading"><Spinner size={18} /></div>}
               {isDraft && !messages.length && <Welcome project={project} />}
@@ -193,6 +216,7 @@ export default function ChatView({
             sessions={sessions}
             running={running}
             queue={state?.queue || []}
+            queuePaused={Boolean(state?.queuePaused)}
             busy={Boolean(pending)}
             encoded={project?.encoded}
             draftProject={isDraft ? project : null}
@@ -212,6 +236,13 @@ export default function ChatView({
           />
           <StatusLine state={state} />
         </div>
+      </div>
+      </div>
+      {browserCall && tab !== "browser" && (
+        <Suspense fallback={null}>
+          <BrowserSession agent="Grok" item={browserCall} cwd={browserCall.arguments.projectPath || cwd} />
+        </Suspense>
+      )}
       </div>
     </main>
   );

@@ -160,6 +160,18 @@ test("the browser drives a whole Grok session", { skip: !chrome || !built, timeo
     await page.waitForFunction(() => document.querySelector("[data-testid='composer']").value === "你好");
     await page.waitForFunction(() => document.querySelectorAll("[data-role='user']").length === 0);
 
+    // Ctrl+Enter while a turn is running interrupts it and sends immediately.
+    await page.click("[data-testid='composer']", { clickCount: 3 });
+    await page.keyboard.press("Backspace");
+    await page.type("[data-testid='composer']", "慢慢说");
+    await page.keyboard.press("Enter");
+    await page.waitForSelector("[data-testid='stop']");
+    await page.type("[data-testid='composer']", "插队");
+    await page.keyboard.down("Control");
+    await page.keyboard.press("Enter");
+    await page.keyboard.up("Control");
+    await waitText(page, "收到：插队");
+
     // Rename and delete from the sidebar.
     await page.click("[data-testid='title']");
     await page.click("[data-testid='title-input']", { clickCount: 3 });

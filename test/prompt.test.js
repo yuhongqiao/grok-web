@@ -23,6 +23,10 @@ test("@path mentions of existing files become resource links", () => {
   fs.mkdirSync(path.join(cwd, "src"));
   fs.writeFileSync(path.join(cwd, "src", "app.js"), "x");
   assert.deepEqual(mentions("看 @src/app.js，还有 @所有人 和 @nope.js", cwd), [path.join(cwd, "src", "app.js")]);
+  const outside = path.join(cwd, "..", "outside-secret.txt");
+  fs.writeFileSync(outside, "nope");
+  assert.deepEqual(mentions(`看 @${outside} 和 @../outside-secret.txt`, cwd), []);
+  fs.rmSync(outside, { force: true });
   const blocks = buildPrompt("看 @src/app.js", [], { cwd });
   assert.equal(blocks[1].type, "resource_link");
   assert.equal(blocks[1].name, "app.js");

@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { startCodexAgent } from "../server/codex-agent.js";
 import { applyThreadEvent } from "../client/src/codex/protocol.js";
+import { attachmentParts, attachmentText } from "../client/src/codex/attachments.js";
 import { codexInput } from "../server/codex-input.js";
 import { interactionResult } from "../server/codex-interactions.js";
 import { json, post } from "./helpers.js";
@@ -190,6 +191,10 @@ test("Codex accepts images, UTF-8 attachments, file mentions and native skill / 
     const input = f.codex.snapshot(thread.id).thread.turns[0].items[0].content;
     assert.deepEqual(input.map((part) => part.type), ["text", "mention", "text", "image", "skill"]);
     assert.match(input[2].text, /这是隔离测试内容/);
+    const outside = path.join(f.cwd, "..", "secret.txt");
+    fs.writeFileSync(outside, "nope");
+    assert.equal(codexInput({ text: `看 @"${outside}" 和 @readme.txt` }, f.cwd).some((part) => part.path === outside), false);
+    fs.rmSync(outside, { force: true });
     assert.match(input[3].url, /^data:image\/png;base64,/);
     const persisted = JSON.parse(fs.readFileSync(path.join(f.fakeHome, `${thread.id}.json`)));
     assert.equal(persisted.collaborationMode.mode, "plan");
@@ -201,7 +206,11 @@ test("Codex accepts images, UTF-8 attachments, file mentions and native skill / 
       { name: "binary.dat", data: Buffer.from([0, 255]).toString("base64") },
       { name: "bad.txt", mimeType: "text/plain", data: "not base64!" },
     ]) assert.throws(() => codexInput({ attachments: [file] }, f.cwd));
-    assert.equal(codexInput({ attachments: [{ name: "only.txt", data: "aGk=" }] }, f.cwd)[0].text, "附件：only.txt\nhi");
+    const only = codexInput({ attachments: [{ name: "only.txt", data: "aGk=" }] }, f.cwd)[0].text;
+    assert.equal(only, attachmentText("only.txt", "hi"));
+    assert.deepEqual(attachmentParts(only), { name: "only.txt", content: "hi" });
+    assert.equal(attachmentParts("附件：这是普通用户消息"), null);
+    assert.deepEqual(attachmentParts("附件：only.txt\nhi"), { name: "only.txt", content: "hi" });
   } finally { await f.close(); }
 });
 
@@ -288,6 +297,12 @@ test("Codex renders persisted local-image attachments after restoring history", 
     assert.equal(image.status, 200);
     assert.equal(image.headers.get("content-type"), "image/png");
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), bytes);
+    const outside = path.join(f.cwd, "..", "secret.png");
+    fs.writeFileSync(outside, bytes);
+    const escaped = { ...saved, id: "image-escape", turns: [{ id: "turn", status: "completed", items: [{ id: "user-image", type: "userMessage", content: [{ type: "localImage", path: outside }] }] }] };
+    fs.writeFileSync(path.join(f.fakeHome, `${escaped.id}.json`), JSON.stringify(escaped));
+    assert.equal((await fetch(`${f.base}/api/codex/threads/${escaped.id}/images/user-image/0`)).status, 400);
+    fs.rmSync(outside, { force: true });
   } finally { await f.close(); }
 });
 
@@ -349,12 +364,18 @@ test("Codex edits and retries in a branch, preserves attachments, and reverts pa
     await waitFor(() => !f.codex.snapshot(thread.id).busy);
     for (const text of ["two", "three"]) { await f.codex.prompt(thread.id, { text }); await waitFor(() => !f.codex.snapshot(thread.id).busy); }
     const [first, second] = f.codex.snapshot(thread.id).thread.turns;
+    await f.codex.prompt(thread.id, { text: "附件：这是普通用户消息" });
+    await waitFor(() => !f.codex.snapshot(thread.id).busy);
+    const prefixed = f.codex.snapshot(thread.id).thread.turns.at(-1);
+    const reworded = await f.codex.revise(thread.id, prefixed.id, { action: "edit", text: "edited ordinary message" });
+    await waitFor(() => !f.codex.snapshot(reworded.thread.id).busy);
+    assert.deepEqual(f.codex.snapshot(reworded.thread.id).thread.turns.at(-1).items[0].content.map((part) => part.text), ["edited ordinary message"]);
     const edited = await json(await post(f.base, `/api/codex/threads/${thread.id}/turns/${first.id}/revise`, { action: "edit", text: "edited one" }));
     await waitFor(() => !f.codex.snapshot(edited.thread.id).busy);
     const content = f.codex.snapshot(edited.thread.id).thread.turns[0].items[0].content;
     assert.equal(content[0].text, "edited one");
     assert.match(content[1].text, /original attachment/);
-    assert.equal(f.codex.snapshot(thread.id).thread.turns.length, 3);
+    assert.equal(f.codex.snapshot(thread.id).thread.turns.length, 4);
     const retried = await f.codex.revise(thread.id, second.id, { action: "retry" });
     await waitFor(() => !f.codex.snapshot(retried.thread.id).busy);
     assert.equal(f.codex.snapshot(retried.thread.id).thread.turns.length, 2);

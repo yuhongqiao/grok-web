@@ -24,7 +24,8 @@ export function localOnly(req, res, next) {
   const port = req.socket.localPort;
   const host = String(req.headers.host || "").toLowerCase();
   const origin = req.headers.origin;
-  const allowedOrigins = [port, DEV_PORT].flatMap((item) => [`http://127.0.0.1:${item}`, `http://localhost:${item}`]);
+  const devOrigin = process.env.GROK_WEB_DEV === "1" || process.env.npm_lifecycle_event === "dev";
+  const allowedOrigins = (devOrigin ? [port, DEV_PORT] : [port]).flatMap((item) => [`http://127.0.0.1:${item}`, `http://localhost:${item}`]);
   if (!LOOPBACK.has(req.socket.remoteAddress) || ![`127.0.0.1:${port}`, `localhost:${port}`].includes(host) || (origin && !allowedOrigins.includes(origin))) {
     res.status(403).json({ error: "只接受本机 127.0.0.1 的访问" });
     return;
@@ -127,7 +128,7 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 
 if (isMain) {
   const store = createStore(defaultPaths(root));
-  const hub = createHub({ store, spawnAgent: () => startAgent() });
+  const hub = createHub({ store, spawnAgent: () => startAgent(), queueDir: path.join(root, "data", "grok-queues") });
   const codex = createCodexHub({ projectsFile: path.join(root, "data", "codex-projects.json") });
   const workspace = createCodexWorkspace(codex);
   const browser = createBrowserLab({ dataDir: path.join(root, "data", "codex-browser") });
@@ -135,7 +136,9 @@ if (isMain) {
   hub.start();
   const port = Number(process.env.PORT || DEFAULT_PORT);
   const server = createApp({ store, hub, codex, workspace, browser, browserToken }).listen(port, HOST, () => {
-    codex.configureBrowser({ name: `grok_web_browser_${process.pid}_${randomBytes(4).toString("hex")}`, script: path.join(root, "server", "browser-mcp.js"), url: `http://${HOST}:${server.address().port}/api/codex/browser/mcp`, token: browserToken });
+    const browserBridge = { name: `grok_web_browser_${process.pid}_${randomBytes(4).toString("hex")}`, script: path.join(root, "server", "browser-mcp.js"), url: `http://${HOST}:${server.address().port}/api/codex/browser/mcp`, token: browserToken };
+    codex.configureBrowser(browserBridge);
+    hub.configureBrowser(browserBridge);
     console.log(`grok-web listening on http://${HOST}:${port}`);
   });
   const shutdown = async () => {

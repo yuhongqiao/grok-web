@@ -1,7 +1,29 @@
+import fs from "node:fs";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { applyUpdate, usageOf } from "../client/src/transcript.js";
 import { buildPrompt, mentions } from "./prompt.js";
 import { HttpError } from "./sessions.js";
+
+const UNCONFIRMED = "进程退出时发送结果未确认，请先看历史，再决定继续或移除。";
+
+// Prefer the exact message. If Grok appends to the running text, use the longest prefix
+// so an earlier short message does not take a later message's attachments.
+export function matchSent(sent, text) {
+  const clean = String(text || "").trim();
+  const exact = sent.findIndex((item) => item.text === clean);
+  if (exact >= 0) return exact;
+  let best = -1;
+  let bestLen = -1;
+  sent.forEach((item, index) => {
+    const len = item.text?.length || 0;
+    if (len > bestLen && item.text && clean.startsWith(item.text)) {
+      best = index;
+      bestLen = len;
+    }
+  });
+  return best;
+}
 
 // Everything the transcript shows. Other session updates only change the session state.
 const TRANSCRIPT = new Set(["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan", "turn_completed", "rewind_marker"]);
@@ -10,12 +32,52 @@ const PERMISSIONS = new Set(["ask", "auto", "yolo"]);
 // One `grok agent stdio` process for every session opened from the browser. Each session keeps
 // its live state here (running turn, Grok's own queue, approvals it waits for) and fans events
 // out to the browser tabs watching it.
-export function createHub({ store, spawnAgent }) {
+export function createHub({ store, spawnAgent, queueDir = "" }) {
   let agent = null;
   let starting = null;
   let lastCommands = null;
+  let browserBridge = null;
   const runtimes = new Map();
   const watchers = new Map();
+  const queuePath = (id) => path.join(queueDir, `${encodeURIComponent(id)}.json`);
+
+  function readQueue(id) {
+    if (!queueDir) return [];
+    try {
+      const data = JSON.parse(fs.readFileSync(queuePath(id), "utf8"));
+      const entries = Array.isArray(data) ? data : data.entries;
+      if (!Array.isArray(entries)) return [];
+      return entries.filter((entry) => entry && typeof entry.id === "string" && Array.isArray(entry.blocks)).map((entry) => ({
+        id: entry.id,
+        text: typeof entry.text === "string" ? entry.text : "",
+        blocks: entry.blocks,
+        ...(entry.error ? { error: String(entry.error) } : {}),
+      }));
+    } catch (error) {
+      if (error.code !== "ENOENT") console.error(error);
+      return [];
+    }
+  }
+
+  function saveQueue(rt) {
+    if (!queueDir) return;
+    try {
+      const file = queuePath(rt.id);
+      const entries = [
+        ...(rt.outgoing ? [{ id: rt.outgoing.id, text: rt.outgoing.text, blocks: rt.outgoing.blocks, error: UNCONFIRMED }] : []),
+        ...rt.waiting.map(({ id, text, blocks, error }) => ({ id, text, blocks, ...(error ? { error } : {}) })),
+      ];
+      if (!entries.length) {
+        fs.rmSync(file, { force: true });
+        return;
+      }
+      fs.mkdirSync(queueDir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify({ entries }), { mode: 0o600 });
+      fs.renameSync(`${file}.tmp`, file);
+    } catch (error) {
+      console.error(error);
+    }
+  }
 
   function emit(id, event) {
     for (const send of watchers.get(id) || []) {
@@ -30,14 +92,17 @@ export function createHub({ store, spawnAgent }) {
   function runtime(id, cwd) {
     let rt = runtimes.get(id);
     if (rt) return rt;
+    const waiting = readQueue(id);
     rt = {
       id, cwd, loaded: false, loading: null, replaying: false,
       permission: store.configDefaults().permission, mode: "default", model: "", effort: "", efforts: null, title: "",
-      running: null, queue: [], waiting: [], inflight: null, turnOpen: false, interrupting: false,
+      running: null, queue: [], waiting, queuePaused: waiting.length > 0, outgoing: null,
+      inflight: null, turnOpen: false, interrupting: false,
       turn: null, pending: new Map(), retry: null, tasks: [], commands: null,
       usage: null, lastTurn: null, sent: [],
     };
     refreshFromDisk(rt);
+    publishWaiting(rt);
     runtimes.set(id, rt);
     return rt;
   }
@@ -98,18 +163,30 @@ export function createHub({ store, spawnAgent }) {
     agent = null;
     const reason = dead.stderrTail?.() || "";
     for (const rt of runtimes.values()) {
-      const busy = rt.running || rt.queue.length || rt.pending.size;
+      const accepted = Boolean(rt.running);
+      if (rt.outgoing && !accepted) {
+        rt.waiting.unshift({ ...rt.outgoing, error: UNCONFIRMED });
+        rt.queuePaused = true;
+      }
+      const busy = accepted || rt.queue.length || rt.pending.size || rt.waiting.length || rt.outgoing;
+      rt.outgoing = null;
       rt.loaded = false;
       rt.running = null;
-      rt.queue = [];
-      rt.waiting = [];
-      rt.inflight = null;
       rt.turnOpen = false;
       rt.interrupting = false;
+      rt.inflight = null;
       rt.pending.clear();
       rt.retry = null;
+      publishWaiting(rt);
       pushState(rt);
-      if (busy) emit(rt.id, { type: "error", message: `Grok 进程退出了${reason ? `：${reason}` : ""}。再发一条会自动重启。` });
+      if (busy) {
+        const tail = rt.queuePaused
+          ? "有消息在退出时可能已经发出，已留在队列里。请先看历史，再继续或移除。"
+          : rt.waiting.length
+            ? `${rt.waiting.length} 条排队消息已保留。再发一条，或点「立即发送」，会继续。`
+            : "再发一条会自动重启。";
+        emit(rt.id, { type: "error", message: `Grok 进程退出了${reason ? `：${reason}` : ""}。${tail}` });
+      }
     }
   }
 
@@ -251,30 +328,53 @@ export function createHub({ store, spawnAgent }) {
   // Follow-up messages stay local until this turn's turn_completed.
   // A second session/prompt while one is open makes Grok cancel the running turn.
   function publishWaiting(rt) {
-    rt.queue = rt.waiting.map((item) => ({ id: item.id, text: item.text, kind: "prompt" }));
+    rt.queue = rt.waiting.map((item) => ({ id: item.id, text: item.text, kind: "prompt", ...(item.error ? { error: item.error } : {}) }));
+    saveQueue(rt);
+  }
+
+  function interrupt(rt) {
+    if ((rt.turnOpen || rt.inflight || rt.running) && agent?.alive) {
+      if (!rt.interrupting) {
+        rt.interrupting = true;
+        agent.notify("session/cancel", { sessionId: rt.id, _meta: { cancelTrigger: "mouse" } });
+      }
+      return true;
+    }
+    return false;
   }
 
   function drain(rt) {
-    if (!agent?.alive || rt.inflight || rt.turnOpen || !rt.waiting.length) return;
+    if (rt.queuePaused || !agent?.alive || !rt.loaded || rt.inflight || rt.turnOpen || !rt.waiting.length) return;
     const entry = rt.waiting.shift();
+    delete entry.error;
+    rt.outgoing = entry;
     publishWaiting(rt);
     const ag = agent;
     rt.turnOpen = true;
     rt.inflight = ag.request("session/prompt", { sessionId: rt.id, prompt: entry.blocks }, 0).then((result) => {
       if (agent !== ag) return;
+      if (rt.outgoing?.id === entry.id) rt.outgoing = null;
       if (result?.stopReason) rt.turnOpen = false;
       const promptId = String(result?._meta?.promptId || "");
       if (!rt.running || !promptId || rt.running.promptId === promptId) rt.running = null;
+      saveQueue(rt);
       pushState(rt, true);
     }, (error) => {
-      if (agent !== ag) return;
+      // onExit owns a dead process. Requeue only a failure from the agent that is still running.
+      if (agent !== ag || !ag.alive) return;
       rt.turnOpen = false;
       rt.running = null;
+      if (rt.outgoing?.id === entry.id) {
+        rt.outgoing = null;
+        rt.waiting.unshift({ ...entry, error: error.message || "发送失败" });
+        rt.queuePaused = true;
+        publishWaiting(rt);
+      }
       pushState(rt, true);
       emit(rt.id, { type: "error", message: error.message || "发送失败" });
     }).finally(() => {
       rt.inflight = null;
-      if (!rt.turnOpen) drain(rt);
+      if (agent === ag && ag.alive && !rt.turnOpen && !rt.queuePaused) drain(rt);
     });
   }
 
@@ -300,8 +400,7 @@ export function createHub({ store, spawnAgent }) {
   }
 
   function takeSent(rt, text) {
-    const clean = text.trim();
-    const at = rt.sent.findIndex((item) => item.text === clean || (item.text && clean.startsWith(item.text)));
+    const at = matchSent(rt.sent, text);
     return at >= 0 ? rt.sent.splice(at, 1)[0] : null;
   }
 
@@ -378,6 +477,7 @@ export function createHub({ store, spawnAgent }) {
       retry: rt.retry,
       tasks: rt.tasks,
       commands: rt.commands || lastCommands || [],
+      queuePaused: Boolean(rt.queuePaused),
       usage: rt.usage,
       lastTurn: rt.lastTurn,
       elsewhere: store.heldElsewhere(rt.id),
@@ -397,7 +497,7 @@ export function createHub({ store, spawnAgent }) {
         rt.replaying = true;
         try {
           const result = await ag.request("session/load", {
-            sessionId: id, cwd: rt.cwd, mcpServers: [], _meta: permissionMeta(rt.permission),
+            sessionId: id, cwd: rt.cwd, mcpServers: browserMcpServers(), _meta: permissionMeta(rt.permission),
           }, 120_000);
           readConfig(rt, result?.configOptions);
           rt.loaded = true;
@@ -424,6 +524,9 @@ export function createHub({ store, spawnAgent }) {
 
   async function prompt(id, body) {
     const rt = await load(id);
+    if (rt.queuePaused && rt.waiting.some((entry) => entry.error) && !body.now) {
+      throw new HttpError(409, "有一条消息在进程退出时可能已经发出。请先查看历史，再继续或移除它。");
+    }
     const attachments = Array.isArray(body.attachments) ? body.attachments : [];
     const blocks = buildPrompt(body.text, attachments, { cwd: rt.cwd });
     const text = String(body.text || "").trim();
@@ -437,11 +540,13 @@ export function createHub({ store, spawnAgent }) {
       ],
     });
     if (rt.sent.length > 20) rt.sent.shift();
+    rt.queuePaused = false;
     const entry = { id: randomUUID(), text, blocks };
     if (body.now) rt.waiting.unshift(entry);
     else rt.waiting.push(entry);
     publishWaiting(rt);
     pushState(rt, true);
+    if (body.now && interrupt(rt)) return { ok: true };
     drain(rt);
     return { ok: true };
   }
@@ -449,6 +554,12 @@ export function createHub({ store, spawnAgent }) {
   return {
     start() {
       ensureAgent().catch((error) => console.error(error.message));
+    },
+
+    // Attach the embedded browser for sessions this process opens. Passed on
+    // session/new and session/load only; it is not written to ~/.grok/config.toml.
+    configureBrowser(bridge) {
+      browserBridge = bridge;
     },
 
     stop() {
@@ -516,7 +627,7 @@ export function createHub({ store, spawnAgent }) {
       buildPrompt(body.text, Array.isArray(body.attachments) ? body.attachments : [], { cwd });
       const permission = PERMISSIONS.has(body.permission) ? body.permission : store.configDefaults().permission;
       const ag = await ensureAgent();
-      const created = await ag.request("session/new", { cwd, mcpServers: [], _meta: permissionMeta(permission) }, 120_000);
+      const created = await ag.request("session/new", { cwd, mcpServers: browserMcpServers(), _meta: permissionMeta(permission) }, 120_000);
       const id = created?.sessionId ? String(created.sessionId) : "";
       if (!id) throw new HttpError(502, "Grok 没有返回会话编号");
       const rt = runtime(id, cwd);
@@ -556,21 +667,20 @@ export function createHub({ store, spawnAgent }) {
       if (index < 0) throw new HttpError(404, "排队里没有这一条");
       if (action !== "now") {
         rt.waiting.splice(index, 1);
+        if (!rt.waiting.some((entry) => entry.error)) rt.queuePaused = false;
         publishWaiting(rt);
         pushState(rt, true);
+        if (!rt.queuePaused && rt.waiting.length && (agent?.alive && rt.loaded)) drain(rt);
         return { ok: true };
       }
       const [entry] = rt.waiting.splice(index, 1);
+      delete entry.error;
       rt.waiting.unshift(entry);
+      rt.queuePaused = false;
       publishWaiting(rt);
       pushState(rt, true);
-      if ((rt.turnOpen || rt.inflight || rt.running) && agent?.alive) {
-        if (!rt.interrupting) {
-          rt.interrupting = true;
-          agent.notify("session/cancel", { sessionId: id, _meta: { cancelTrigger: "mouse" } });
-        }
-        return { ok: true };
-      }
+      if (!agent?.alive || !rt.loaded) await load(id);
+      if (interrupt(rt)) return { ok: true };
       drain(rt);
       return { ok: true };
     },
@@ -644,11 +754,20 @@ export function createHub({ store, spawnAgent }) {
     async trash(id) {
       const rt = locate(id);
       requireIdle(rt, "会话还在运行，先停止再删除");
+      let ignorePids = [];
       if (rt.loaded && agent?.alive) {
-        await agent.request("_x.ai/session/close", { sessionId: id }, 30_000).catch(() => {});
+        try {
+          await agent.request("_x.ai/session/close", { sessionId: id }, 30_000);
+          if (agent?.pid) ignorePids = [agent.pid];
+        } catch {
+          // The process may still hold the session lock. Do not ignore that pid.
+        }
         rt.loaded = false;
       }
-      const result = store.trashSession(id, rt.cwd, { ignorePids: agent?.pid ? [agent.pid] : [] });
+      const result = store.trashSession(id, rt.cwd, { ignorePids });
+      rt.waiting = [];
+      rt.outgoing = null;
+      publishWaiting(rt);
       runtimes.delete(id);
       emit(id, { type: "deleted" });
       return result;
@@ -751,6 +870,20 @@ export function createHub({ store, spawnAgent }) {
       throw new HttpError(404, "没有这类扩展");
     },
   };
+
+  function browserMcpServers() {
+    if (!browserBridge) return [];
+    const { name, script, url, token } = browserBridge;
+    return [{
+      name,
+      command: process.execPath,
+      args: [script],
+      env: [
+        { name: "CODEX_WEB_BROWSER_URL", value: url },
+        { name: "CODEX_WEB_BROWSER_TOKEN", value: token },
+      ],
+    }];
+  }
 }
 
 function mergeTurn(disk, live) {

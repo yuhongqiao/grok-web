@@ -9,7 +9,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "concurrently -k -n server,web \"node server/index.js\" \"vite --config client/vite.config.js\"",
+    "dev": "GROK_WEB_DEV=1 concurrently -k -n server,web \"node server/index.js\" \"vite --config client/vite.config.js\"",
     "start": "node server/index.js",
     "build": "vite build --config client/vite.config.js",
     "test": "npm run build && node --test test/*.test.js",

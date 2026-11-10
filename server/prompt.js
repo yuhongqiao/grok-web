@@ -41,18 +41,35 @@ export function buildPrompt(text, attachments = [], { cwd = "" } = {}) {
   return blocks;
 }
 
-// Existing files named as `@path` (relative to the project, or absolute).
+// Existing files named as `@path`, and only when they stay inside the project.
 export function mentions(text, cwd) {
   const found = [];
   const pattern = /(^|\s)@([^\s@，。；：！？、（）【】「」《》"'`]+)/gu;
   let match = pattern.exec(text);
   while (match && found.length < MAX_MENTIONS) {
     const raw = match[2].replace(/[,.;:)\]]+$/, "");
-    const file = raw.startsWith("/") ? raw : cwd ? path.join(cwd, raw) : "";
-    if (file && !found.includes(file) && isFile(file)) found.push(file);
+    const file = cwd ? path.resolve(cwd, raw) : "";
+    if (file && !found.includes(file) && withinProject(cwd, file) && isFile(file)) found.push(file);
     match = pattern.exec(text);
   }
   return found;
+}
+
+// True when `file` is a real path inside `cwd`, after resolving `..` and links.
+export function withinProject(cwd, file) {
+  if (!cwd || !file) return false;
+  const root = path.resolve(cwd);
+  const target = path.resolve(root, file);
+  const rel = path.relative(root, target);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  try {
+    const realRoot = fs.realpathSync(root);
+    const realTarget = fs.realpathSync(target);
+    const realRel = path.relative(realRoot, realTarget);
+    return Boolean(realRel) && !realRel.startsWith("..") && !path.isAbsolute(realRel);
+  } catch {
+    return false;
+  }
 }
 
 function isFile(file) {

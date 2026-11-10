@@ -60,6 +60,7 @@ export default function Composer({
   sessions,
   running,
   queue,
+  queuePaused = false,
   busy,
   encoded,
   draftProject,
@@ -267,10 +268,11 @@ export default function Composer({
       return;
     }
     if (event.key !== "Enter") return;
-    const sends = multiline ? event.shiftKey || event.metaKey || event.ctrlKey : !event.shiftKey;
+    const command = event.metaKey || event.ctrlKey;
+    const sends = multiline ? event.shiftKey || command : !event.shiftKey;
     if (sends) {
       event.preventDefault();
-      submit();
+      submit({ now: Boolean(running && command && !event.shiftKey && !event.altKey) });
     }
   };
 
@@ -330,10 +332,12 @@ export default function Composer({
         )}
         {queue.length > 0 && (
           <div className="queue" data-testid="queue">
+            {queuePaused && <p className="faint-line">队列已暂停。点「立即发送」继续，或先移除不需要的消息。</p>}
             {queue.map((entry, index) => (
               <div className="queue-item" key={entry.id}>
                 <span className="queue-tag">排队 {index + 1}</span>
                 <span className="queue-text">{entry.text || "（附件）"}</span>
+                {entry.error && <small className="queue-error">{entry.error}</small>}
                 <button type="button" className="link" data-testid="queue-now" onClick={() => onQueue(entry.id, "now")}>立即发送</button>
                 <button type="button" className="link" data-testid="queue-remove" onClick={() => onQueue(entry.id, "remove")}>移除</button>
               </div>
@@ -468,7 +472,7 @@ export default function Composer({
               type="button"
               className="send"
               data-testid="send"
-              title={running ? "排队发送" : "发送"}
+              title={running ? "排队发送，Ctrl+Enter 立即发送" : "发送"}
               disabled={empty || sending}
               onClick={() => submit()}
             >

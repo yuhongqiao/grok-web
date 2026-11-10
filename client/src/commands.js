@@ -36,6 +36,7 @@ export const WEB_COMMANDS = [
   web("multiline", "切换多行输入", { aliases: ["ml"] }),
   web("theme", "切换深色 / 浅色", { aliases: ["t"] }),
   web("settings", "打开设置", { aliases: ["config", "preferences", "prefs"] }),
+  web("browser", "打开内置浏览器"),
   web("docs", "打开 Grok Build 文档", { aliases: ["howto", "guides"] }),
   web("help", "列出所有命令"),
   web("home", "回到首页", { aliases: ["welcome", "quit", "exit"] }),

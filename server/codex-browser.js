@@ -6,14 +6,47 @@ import { PNG } from "pngjs";
 import { HttpError } from "./sessions.js";
 import { workspaceRoot } from "./codex-workspace.js";
 
+const METADATA_HOSTS = new Set(["169.254.169.254", "metadata.google.internal", "metadata.google.internal.", "fd00:ec2::254"]);
+const SENSITIVE_QUERY = /^(token|access_token|id_token|refresh_token|password|passwd|pwd|secret|api_key|apikey|key|code|auth|session|sessionid|jwt|credential|sig)$/i;
 const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 24);
+
+export function persistedPageUrl(value) {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (SENSITIVE_QUERY.test(key)) url.searchParams.set(key, "[已隐藏]");
+    }
+    if (url.hash && /(?:access_token|id_token|refresh_token|token)=/i.test(url.hash)) url.hash = "";
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+export function browserUrl(value) {
+  let url;
+  try { url = new URL(value); } catch { throw new HttpError(400, "请输入完整的 http:// 或 https:// 地址"); }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (METADATA_HOSTS.has(host)) throw new HttpError(400, "测试浏览器不打开云主机元数据地址");
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new HttpError(400, "测试浏览器仅打开不含内嵌账号密码的 HTTP(S) 地址");
+  return url.toString();
+}
+
+function launchArgs() {
+  const args = ["--no-first-run", "--no-default-browser-check"];
+  const rootUser = typeof process.getuid === "function" && process.getuid() === 0;
+  if (process.platform === "linux" && (rootUser || process.env.CHROME_NO_SANDBOX === "1")) args.push("--no-sandbox");
+  return args;
+}
 const chromePath = () => [process.env.CHROME_BIN, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium", "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find((file) => file && fs.existsSync(file));
 const cleanUrl = (value) => { try { const url = new URL(value); url.hash = ""; for (const key of [...url.searchParams.keys()]) url.searchParams.set(key, "…"); return url.toString(); } catch { return value; } };
 const jsonRead = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch (error) { if (error.code === "ENOENT") return fallback; throw error; } };
 const jsonWrite = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); fs.writeFileSync(`${file}.tmp`, JSON.stringify(value, null, 2), { mode: 0o600 }); fs.renameSync(`${file}.tmp`, file); };
 
 export const browserTools = [
-  { name: "browser_open", description: "Open the browser embedded in the user's Codex Web conversation. Use this when asked to use a browser to log in, test a website, or verify a page: open the URL, read browser_snapshot, operate with browser_action, then verify the result. The user automatically sees your browser. Reuses a separate persistent login profile, never the user's personal Chrome profile. Pass the current session project directory as projectPath.", inputSchema: { type: "object", properties: { projectPath: { type: "string" }, profile: { type: "string" }, url: { type: "string" } }, required: ["projectPath"] } },
+  { name: "browser_open", description: "Open the browser embedded in this web conversation (Grok or Codex). Use this when asked to use a browser to log in, test a website, or verify a page: open the URL, read browser_snapshot, operate with browser_action, then verify the result. The user automatically sees your browser beside the conversation. Reuses a separate persistent login profile, never the user's personal Chrome profile. Pass the current session project directory as projectPath.", inputSchema: { type: "object", properties: { projectPath: { type: "string" }, profile: { type: "string" }, url: { type: "string" } }, required: ["projectPath"] } },
   { name: "browser_snapshot", description: "Read the current page, element refs, tabs and diagnostics. Password values, cookies and auth headers are not returned.", inputSchema: { type: "object", properties: { projectPath: { type: "string" }, profile: { type: "string" } }, required: ["projectPath"] } },
   { name: "browser_action", description: "Operate the embedded browser using refs from browser_snapshot: navigate, click, fill, type, press, select, scroll, wait, assert, viewport, back, forward, reload, tab, newTab, closeTab. assert supports text, selector or url. Complete the requested login and page tests, checking the resulting page rather than merely opening it. For login verification/captcha or missing credentials use browser_handoff. Do not work around manual takeover.", inputSchema: { type: "object", properties: { projectPath: { type: "string" }, profile: { type: "string" }, action: { type: "string" }, url: { type: "string" }, ref: { type: "string" }, selector: { type: "string" }, text: { type: "string" }, key: { type: "string" }, x: { type: "number" }, y: { type: "number" }, width: { type: "integer" }, height: { type: "integer" }, tab: { type: "integer" } }, required: ["projectPath", "action"] } },
   { name: "browser_handoff", description: "Ask the user to complete login, captcha or verification directly in the embedded browser, then wait up to five minutes. The tool resumes with the updated page when the user clicks 完成登录，继续. Never request a password in chat when the user can enter it here. If the wait expires, stop browser actions and ask the user to return control before continuing.", inputSchema: { type: "object", properties: { projectPath: { type: "string" }, profile: { type: "string" }, reason: { type: "string" } }, required: ["projectPath", "reason"] } },
@@ -41,7 +74,10 @@ export function createBrowserLab({ dataDir, headless = true, executablePath = ch
 
   function redact(s, text) {
     let result = String(text);
-    for (const secret of s.secrets) if (secret) result = result.split(secret).join("[已隐藏]");
+    for (const secret of s.secrets) {
+      if (typeof secret !== "string" || secret.length < 8) continue;
+      result = result.split(secret).join("[已隐藏]");
+    }
     return result;
   }
 
@@ -58,7 +94,7 @@ export function createBrowserLab({ dataDir, headless = true, executablePath = ch
     if (s.browser?.connected) return;
     if (!s.launching) s.launching = (async () => {
       if (!executablePath) throw new HttpError(503, "未找到 Chrome，请安装 Chrome 或设置 CHROME_BIN");
-      const browser = await puppeteer.launch({ executablePath, headless, userDataDir: path.join(s.dir, "chrome"), defaultViewport: { width: 1280, height: 800 }, args: ["--no-first-run", "--no-default-browser-check", ...(process.platform === "linux" ? ["--no-sandbox"] : [])] });
+      const browser = await puppeteer.launch({ executablePath, headless, userDataDir: path.join(s.dir, "chrome"), defaultViewport: { width: 1280, height: 800 }, args: launchArgs() });
       s.browser = browser;
       for (const page of await browser.pages()) observe(s, page);
       browser.on("targetcreated", async (target) => { try { if (target.type() === "page") { const page = await target.page(); if (page && !page.isClosed()) observe(s, page); } } catch {} });
@@ -111,11 +147,6 @@ export function createBrowserLab({ dataDir, headless = true, executablePath = ch
     return { opened: true, profile: s.profile, manual: s.manual, handoffReason: s.handoffReason || "", recording: Boolean(s.recording), running: s.running, url: redact(s, page.url()), ...content, viewport: page.viewport(), tabs: await Promise.all(tabs.map(async (tab, index) => ({ index, title: redact(s, await tab.title().catch(() => "")), url: cleanUrl(tab.url()), active: tab === page }))), console: s.console.map((entry) => ({ ...entry, text: redact(s, entry.text) })), network: s.network, ...(withImage ? { image: Buffer.from(await page.screenshot({ type: "png", waitForFonts: false, timeout: 10_000 })).toString("base64") } : {}) };
   }
 
-  function navigateUrl(value) {
-    let url; try { url = new URL(value); } catch { throw new HttpError(400, "请输入完整的 http:// 或 https:// 地址"); }
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new HttpError(400, "测试浏览器仅打开不含内嵌账号密码的 HTTP(S) 地址");
-    return url.toString();
-  }
 
   async function perform(s, step, replay = false, manual = false) {
     if (s.manual && !manual) throw new HttpError(409, "浏览器正在由用户接管，请等待用户交回控制权");
@@ -139,7 +170,7 @@ export function createBrowserLab({ dataDir, headless = true, executablePath = ch
         recorded.secret = true;
       }
     }
-    if (step.action === "navigate") await page.goto(navigateUrl(step.url), { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (step.action === "navigate") await page.goto(browserUrl(step.url), { waitUntil: "domcontentloaded", timeout: 30_000 });
     else if (step.action === "click") {
       if (element) {
         const navigates = await element.evaluate((node) => Boolean(node.closest("a[href],button[type=submit],form button:not([type]),input[type=submit]")));
@@ -187,11 +218,14 @@ export function createBrowserLab({ dataDir, headless = true, executablePath = ch
     } else if (step.action === "back") await page.goBack({ waitUntil: "domcontentloaded" });
     else if (step.action === "forward") await page.goForward({ waitUntil: "domcontentloaded" });
     else if (step.action === "reload") await page.reload({ waitUntil: "domcontentloaded" });
-    else if (step.action === "newTab") { s.page = await s.browser.newPage(); if (step.url) await s.page.goto(navigateUrl(step.url), { waitUntil: "domcontentloaded" }); }
+    else if (step.action === "newTab") { s.page = await s.browser.newPage(); if (step.url) await s.page.goto(browserUrl(step.url), { waitUntil: "domcontentloaded" }); }
     else if (step.action === "tab") { const tabs = await s.browser.pages(); if (!tabs[step.tab]) throw new HttpError(400, "找不到该标签页"); s.page = tabs[step.tab]; await s.page.bringToFront(); }
     else if (step.action === "closeTab") { await page.close(); s.page = null; await pageFor(s); }
     else throw new HttpError(400, "不支持的浏览器操作");
-    if (s.recording && !replay && !manual) s.recording.steps.push(recorded);
+    if (s.recording && !replay && !manual) {
+      if (recorded.url) recorded.url = redact(s, persistedPageUrl(recorded.url));
+      s.recording.steps.push(recorded);
+    }
     return snapshot(s);
   }
 
@@ -301,7 +335,7 @@ export function createBrowserLab({ dataDir, headless = true, executablePath = ch
       const s = session(cwd, profile);
       return serial(s, async () => {
         if (s.running) throw new HttpError(409, "测试正在运行");
-        if (action === "start") { const page = await pageFor(s); s.recording = { steps: /^https?:/.test(page.url()) ? [{ action: "navigate", url: page.url() }] : [] }; return { recording: true }; }
+        if (action === "start") { const page = await pageFor(s); s.recording = { steps: /^https?:/.test(page.url()) ? [{ action: "navigate", url: redact(s, persistedPageUrl(page.url())) }] : [] }; return { recording: true }; }
         if (action === "save") {
           if (!s.recording?.steps.length) throw new HttpError(400, "请先录制至少一个操作");
           if (typeof name !== "string" || !name.trim()) throw new HttpError(400, "请输入用例名称");

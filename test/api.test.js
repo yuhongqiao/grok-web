@@ -4,7 +4,9 @@ import http from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { messageText } from "../client/src/transcript.js";
-import { fixtureApp, json, line, listen, openStream, post, tempRoot, writeSession } from "./helpers.js";
+import { startAgent } from "../server/agent.js";
+import { createHub, matchSent } from "../server/hub.js";
+import { fakeAgent, fixtureApp, json, line, listen, openStream, post, tempRoot, writeSession } from "./helpers.js";
 
 async function setup() {
   const root = tempRoot();
@@ -85,6 +87,35 @@ test("a new session streams its first turn and the snapshot matches what Grok sa
   }
 });
 
+test("sessions opened here get the embedded browser without writing Grok config", async () => {
+  const t = await setup();
+  try {
+    t.hub.configureBrowser({
+      name: "grok_web_browser_test",
+      script: "/tmp/browser-mcp.js",
+      url: "http://127.0.0.1:9/api/codex/browser/mcp",
+      token: "token",
+    });
+    const project = await t.project("浏览器");
+    const { sessionId } = await json(await post(t.base, `/api/projects/${project.encoded}/sessions`, { text: "你好" }));
+    const stream = t.stream(sessionId);
+    await stream.waitFor(turnsDone(stream, 1));
+    const created = await json(await fetch(`${t.base}/api/extensions/mcp?session=${sessionId}`));
+    assert.equal(created.items[0].name, "grok_web_browser_test");
+    assert.equal(created.items[0].description, process.execPath);
+    assert.equal(created.items[0].detail, "stdio");
+
+    const from = stream.events.length;
+    t.hub.stop();
+    await stream.waitFor((event) => event.type === "state", { from });
+    const reloaded = await json(await fetch(`${t.base}/api/extensions/mcp?session=${sessionId}`));
+    assert.equal(reloaded.items[0].name, "grok_web_browser_test");
+    assert.equal(reloaded.items[0].description, process.execPath);
+  } finally {
+    await t.close();
+  }
+});
+
 test("cancel stops the running turn and the stop button goes away", async () => {
   const t = await setup();
   try {
@@ -119,6 +150,54 @@ test("follow-ups during a turn queue in the same session and do not cancel it", 
     assert.equal(firstDone.update.stop_reason, "end_turn");
     await stream.waitFor((event) => event.type === "turn_start" && event.message.text === "第二条", { timeout: 15_000 });
     assert.equal(stream.events.some((event) => turnDone(event) && event.update.stop_reason === "cancelled"), false);
+  } finally {
+    await t.close();
+  }
+});
+
+test("ctrl-enter now interrupts the running turn with the new message", async () => {
+  const t = await setup();
+  try {
+    const project = await t.project("立刻");
+    const { sessionId } = await json(await post(t.base, `/api/projects/${project.encoded}/sessions`, { text: "慢慢说" }));
+    const stream = t.stream(sessionId);
+    await stream.waitFor(stateIs((state) => state.running));
+    assert.equal((await post(t.base, `/api/sessions/${sessionId}/prompt`, { text: "马上", now: true })).status, 200);
+    const stopped = await stream.waitFor((event) => turnDone(event), { timeout: 15_000 });
+    assert.equal(stopped.update.stop_reason, "cancelled");
+    await stream.waitFor((event) => event.type === "turn_start" && event.message.text === "马上", { timeout: 15_000 });
+  } finally {
+    await t.close();
+  }
+});
+
+test("a longer queued message keeps its own attachments", () => {
+  const sent = [{ text: "修复", images: ["a"] }, { text: "修复测试", images: ["b"] }];
+  assert.equal(matchSent(sent, "修复测试"), 1);
+  assert.equal(matchSent(sent, "修复"), 0);
+  assert.equal(matchSent([{ text: "修复", images: ["a"] }], "修复并补充说明"), 0);
+});
+
+test("unsent grok messages survive an agent exit and a new server", async () => {
+  const t = await setup();
+  try {
+    const project = await t.project("留住");
+    const { sessionId } = await json(await post(t.base, `/api/projects/${project.encoded}/sessions`, { text: "停一下" }));
+    const stream = t.stream(sessionId);
+    await stream.waitFor(stateIs((state) => state.running));
+    assert.equal((await post(t.base, `/api/sessions/${sessionId}/prompt`, { text: "还在" })).status, 200);
+    const from = stream.events.length;
+    t.hub.stop();
+    const kept = await stream.waitFor(stateIs((state) => state.queue.some((entry) => entry.text === "还在") && !state.running), { from, timeout: 15_000 });
+    assert.equal(kept.state.queuePaused, false);
+    const resumed = createHub({ store: t.store, spawnAgent: () => startAgent({ command: process.execPath, args: [fakeAgent], env: { ...process.env, GROK_SESSIONS_DIR: t.sessionsDir } }), queueDir: path.join(t.root, "grok-queues") });
+    const snap = resumed.snapshot(sessionId);
+    assert.equal(snap.state.queue.some((entry) => entry.text === "还在"), true);
+    assert.equal(snap.state.queuePaused, true);
+    resumed.stop();
+    assert.equal((await post(t.base, `/api/sessions/${sessionId}/prompt`, { text: "继续" })).status, 200);
+    await stream.waitFor((event) => event.type === "turn_start" && event.message.text === "还在", { timeout: 15_000 });
+    await stream.waitFor((event) => event.type === "turn_start" && event.message.text === "继续", { timeout: 15_000 });
   } finally {
     await t.close();
   }
@@ -322,7 +401,14 @@ test("only this machine's own pages may use the server", async () => {
     assert.equal(await raw({}), 200);
     assert.equal(await raw({ host: `localhost:${port}` }), 200);
     assert.equal(await raw({ origin: `http://127.0.0.1:${port}` }), 200);
-    assert.equal(await raw({ origin: "http://127.0.0.1:5173" }), 200);
+    assert.equal(await raw({ origin: "http://127.0.0.1:5173" }), 403);
+    process.env.GROK_WEB_DEV = "1";
+    try {
+      assert.equal(await raw({ origin: "http://127.0.0.1:5173" }), 200);
+      assert.equal(await raw({ origin: "http://localhost:5173" }), 200);
+    } finally {
+      delete process.env.GROK_WEB_DEV;
+    }
     assert.equal(await raw({ host: `evil.example:${port}` }), 403);
     assert.equal(await raw({ host: "127.0.0.1:80" }), 403);
     assert.equal(await raw({ origin: "https://evil.example" }), 403);

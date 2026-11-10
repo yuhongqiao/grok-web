@@ -10,7 +10,7 @@ export function workspaceRoot(value) {
   throw new HttpError(400, "项目目录不存在");
 }
 
-function inside(root, relative = "") {
+export function inside(root, relative = "") {
   if (typeof relative !== "string" || relative.includes("\0")) throw new HttpError(400, "文件路径无效");
   const file = path.resolve(root, relative);
   const contained = (target) => target === root || target.startsWith(`${root}${path.sep}`);

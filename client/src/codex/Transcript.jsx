@@ -5,6 +5,7 @@ import { duration } from "../format.js";
 import { threadTitle } from "./protocol.js";
 import { threadLink } from "./links.js";
 import { isBrowserCall, browserLabel } from "./browser.js";
+import { attachmentParts } from "./attachments.js";
 
 const STATUSES = { inProgress: "进行中", completed: "已完成", failed: "失败", declined: "已拒绝", interrupted: "已停止" };
 
@@ -52,7 +53,11 @@ export function exportThread(thread) {
   const lines = [`# ${threadTitle(thread)}`, "", `项目：${thread.cwd}`, `会话：${thread.id}`, ""];
   for (const turn of thread.turns) {
     for (const item of turn.items) {
-      if (item.type === "userMessage") lines.push("## 用户", "", ...(item.content || []).map((part) => part.type === "text" ? part.text : part.type === "image" || part.type === "localImage" ? `[图片${part.path ? `：${part.path}` : ""}]` : `[${part.type}：${part.name || part.path || ""}]`), "");
+      if (item.type === "userMessage") lines.push("## 用户", "", ...(item.content || []).map((part) => {
+        if (part.type !== "text") return part.type === "image" || part.type === "localImage" ? `[图片${part.path ? `：${part.path}` : ""}]` : `[${part.type}：${part.name || part.path || ""}]`;
+        const attachment = attachmentParts(part.text);
+        return attachment ? `[附件：${attachment.name}]\n${attachment.content}` : part.text;
+      }), "");
       else if (["agentMessage", "plan"].includes(item.type)) lines.push("## Codex", "", item.text || "", "");
       else if (item.type === "commandExecution") lines.push("### 命令", "", "```sh", item.command || "", "```", "", "```text", item.aggregatedOutput || "", "```", "");
       else if (item.type === "fileChange") for (const change of item.changes || []) lines.push(`### ${change.path}`, "", "```diff", change.diff || "", "```", "");
@@ -75,7 +80,8 @@ function CodexItem({ item, threadId, onImage }) {
   if (item.type === "userMessage") {
     return <div className="msg user" data-role="user"><div className="bubble">{(item.content || []).map((part, index) => {
       if (part.type === "text") {
-        if (part.text.startsWith("附件：")) { const split = part.text.indexOf("\n"); return <details className="codex-attachment-text" key={index}><summary><Icon name="file" />{part.text.slice(0, split)}</summary><pre className="code-box">{part.text.slice(split + 1)}</pre></details>; }
+        const attachment = attachmentParts(part.text);
+        if (attachment) return <details className="codex-attachment-text" key={index}><summary><Icon name="file" />附件：{attachment.name}</summary><pre className="code-box">{attachment.content}</pre></details>;
         return <div className="bubble-text" key={index}>{part.text}</div>;
       }
       if (["image", "localImage"].includes(part.type)) {

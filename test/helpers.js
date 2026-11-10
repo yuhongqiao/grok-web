@@ -50,7 +50,7 @@ export function fixtureApp(root, agentPath = fakeAgent) {
   fs.mkdirSync(store.parentDir, { recursive: true });
   fs.mkdirSync(store.sessionsDir, { recursive: true });
   const env = { ...process.env, GROK_SESSIONS_DIR: store.sessionsDir };
-  const hub = createHub({ store, spawnAgent: () => startAgent({ command: process.execPath, args: [agentPath], env }) });
+  const hub = createHub({ store, spawnAgent: () => startAgent({ command: process.execPath, args: [agentPath], env }), queueDir: path.join(root, "grok-queues") });
   hub.start();
   return { store, hub, app: createApp({ store, hub }), sessionsDir: store.sessionsDir };
 }

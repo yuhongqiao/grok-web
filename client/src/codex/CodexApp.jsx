@@ -14,6 +14,7 @@ import BrowserPanel from "./BrowserPanel.jsx";
 import BrowserSession from "./BrowserSession.jsx";
 import { isBrowserCall } from "./browser.js";
 import { permissionLabel, approvalLabel } from "./permissions.js";
+import { attachmentParts } from "./attachments.js";
 import WorkspacePanel from "./WorkspacePanel.jsx";
 import "./codex.css";
 
@@ -396,7 +397,7 @@ function ArchivesDialog({ onRestore, onClose }) {
 }
 
 function ReviseDialog({ action, turn, initial, onSave, onClose }) {
-  const [text, setText] = useState(initial ?? turn?.items.find((item) => item.type === "userMessage")?.content?.find((part) => part.type === "text" && !part.text.startsWith("附件："))?.text ?? "");
+  const [text, setText] = useState(initial ?? turn?.items.find((item) => item.type === "userMessage")?.content?.find((part) => part.type === "text" && !attachmentParts(part.text))?.text ?? "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const editable = action === "edit" || action === "queue";

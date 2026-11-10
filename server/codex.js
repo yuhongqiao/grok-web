@@ -7,6 +7,8 @@ import { startCodexAgent } from "./codex-agent.js";
 import { codexInput } from "./codex-input.js";
 import { interactionResult } from "./codex-interactions.js";
 import { applyThreadEvent, runningTurn } from "../client/src/codex/protocol.js";
+import { attachmentParts } from "../client/src/codex/attachments.js";
+import { inside, workspaceRoot } from "./codex-workspace.js";
 
 const REQUESTS = new Set([
   "item/commandExecution/requestApproval", "item/fileChange/requestApproval",
@@ -329,7 +331,7 @@ export function createCodexHub({ projectsFile, spawnAgent = startCodexAgent }) {
     let removed = false;
     const attachments = input.filter((part) => {
       if (part.type === "mention") return false;
-      if (!removed && part.type === "text" && !part.text.startsWith("附件：")) { removed = true; return false; }
+      if (!removed && part.type === "text" && !attachmentParts(part.text)) { removed = true; return false; }
       return true;
     });
     if (!text.trim() && !attachments.length) throw new HttpError(400, "请输入消息或保留附件");
@@ -378,7 +380,7 @@ export function createCodexHub({ projectsFile, spawnAgent = startCodexAgent }) {
       if (part?.type !== "localImage") throw new HttpError(404, "找不到此图片");
       const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" }[path.extname(part.path).toLowerCase()];
       if (!mime) throw new HttpError(400, "图片格式暂不支持");
-      const file = path.resolve(rt.thread.cwd, part.path);
+      const file = inside(workspaceRoot(rt.thread.cwd), part.path);
       try {
         if (fs.statSync(file).size > 20 * 1024 * 1024) throw new HttpError(400, "图片超过 20MB");
         return { bytes: await fs.promises.readFile(file), mime };
@@ -558,7 +560,7 @@ export function createCodexHub({ projectsFile, spawnAgent = startCodexAgent }) {
         try { await startTurn(result.thread.id, { input, options: turnSettings(body) }); }
         catch (error) {
           const forked = runtime(result.thread.id);
-          forked.queue.push({ id: randomUUID(), text: input.find((part) => part.type === "text" && !part.text.startsWith("附件："))?.text || "", files: [], skills: input.filter((part) => part.type === "skill").map((part) => part.name), input, options: turnSettings(body), error: error.message });
+          forked.queue.push({ id: randomUUID(), text: input.find((part) => part.type === "text" && !attachmentParts(part.text))?.text || "", files: [], skills: input.filter((part) => part.type === "skill").map((part) => part.name), input, options: turnSettings(body), error: error.message });
           forked.queuePaused = true;
           emitQueue(result.thread.id);
           return { ...snapshot(result.thread.id), sendError: error.message };

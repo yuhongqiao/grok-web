@@ -3,7 +3,7 @@ import { browserApi } from "./api.js";
 import { browserLabel } from "./browser.js";
 import Icon, { Spinner } from "../components/Icon.jsx";
 
-export default function BrowserSession({ item, cwd }) {
+export default function BrowserSession({ item, cwd, agent = "Codex" }) {
   const profile = item.arguments?.profile || "default";
   const [state, setState] = useState({});
   const [collapsed, setCollapsed] = useState(false);
@@ -39,7 +39,7 @@ export default function BrowserSession({ item, cwd }) {
   }
 
   const interact = (body) => perform("interact", body);
-  return <aside className={`codex-browser-session ${collapsed ? "collapsed" : ""}`} data-testid="codex-browser-session" aria-label="Codex 内置浏览器">
+  return <aside className={`codex-browser-session ${collapsed ? "collapsed" : ""}`} data-testid="codex-browser-session" aria-label={`${agent} 内置浏览器`}>
     <div className="browser-session-head"><Icon name="globe" /><strong>内置浏览器</strong><button className="icon-button" aria-label={collapsed ? "展开内置浏览器" : "收起内置浏览器"} onClick={() => setCollapsed(!collapsed)}><Icon name={collapsed ? "chevronDown" : "chevronRight"} /></button></div>
     {!collapsed && <div className="browser-session-body">
       <p className="browser-session-status" role="status">{item.status === "inProgress" && !state.manual && <Spinner />}{state.manual ? "等待你完成登录或验证" : browserLabel(item)}{item.status === "failed" && " · 失败"}</p>
@@ -55,7 +55,7 @@ export default function BrowserSession({ item, cwd }) {
           if (!state.manual || pending || event.ctrlKey || event.metaKey || event.altKey) return;
           if (["Tab", "Enter", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) { event.preventDefault(); interact({ action: "press", key: event.key }); }
         }} />}
-      {!state.image && <p className="faint-line">{state.opened === false ? "浏览器尚未打开；Codex 调用工具后会显示页面。" : "正在获取页面预览…"}</p>}
+      {!state.image && <p className="faint-line">{state.opened === false ? `浏览器尚未打开；${agent} 调用工具后会显示页面。` : "正在获取页面预览…"}</p>}
       {state.opened && <>
         {state.manual ? <div className="browser-session-takeover">
           <p>{state.handoffReason || "点击预览中的输入框，在下方输入内容，完成登录后交回控制权。"}</p>
@@ -66,7 +66,7 @@ export default function BrowserSession({ item, cwd }) {
           <div className="panel-toolbar"><button className="btn" disabled={pending} onClick={() => interact({ action: "press", key: "Tab" })}>Tab</button><button className="btn" disabled={pending} onClick={() => interact({ action: "press", key: "Enter" })}>Enter</button><button className="btn" disabled={pending} onClick={() => interact({ action: "scroll", y: 500 })}>向下滚动</button></div>
           <button className="btn primary" disabled={pending} onClick={async () => { if (await perform("manual", { manual: false })) setText(""); }}>完成登录，继续</button>
         </div> : <button className="btn" disabled={pending || state.running} onClick={() => perform("manual", { manual: true })}>接管浏览器</button>}
-        <p className="faint-line">{state.manual ? "接管期间 Codex 的自动操作会暂停。" : "Codex 自动操作此页面，你可以继续在对话中补充要求。"}</p>
+        <p className="faint-line">{state.manual ? `接管期间 ${agent} 的自动操作会暂停。` : `${agent} 自动操作此页面，你可以继续在对话中补充要求。`}</p>
         {state.tabs?.length > 1 && <div className="panel-toolbar">{state.tabs.map((entry) => <button className={`btn ${entry.active ? "primary" : ""}`} key={entry.index} disabled={!state.manual || pending} title={entry.url} onClick={() => interact({ action: "tab", tab: entry.index })}>{entry.title || `标签 ${entry.index + 1}`}</button>)}</div>}
         <details><summary>页面诊断</summary><pre className="code-box">{JSON.stringify({ console: state.console?.filter((entry) => entry.type === "error"), network: state.network?.filter((entry) => entry.error || entry.status >= 400) }, null, 2)}</pre></details>
       </>}
